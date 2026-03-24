@@ -5,7 +5,7 @@
  * 1. Receives conversation transcripts from Retell via WebSocket
  * 2. Sends them to Groq (Llama 4 Scout) for inference
  * 3. Streams response tokens back to Retell for text-to-speech
- * 4. Handles tool calls (transfer_call, book_appointment) via Retell's protocol
+ * 4. Handles tool calls (transfer_call, book_appointment, capture_lead, end_call) via Retell's protocol
  *
  * Deploy this as a standalone service (Railway, Render, Fly.io, etc.)
  *
@@ -44,12 +44,59 @@ function getTools(onboardingComplete) {
         name: 'transfer_call',
         description:
           "Transfer the current call to the business owner's phone number. " +
-          'Use when the caller wants to speak with a human. ' +
-          'Always capture caller info (name, phone, issue) BEFORE invoking.',
-        parameters: { type: 'object', properties: {}, required: [] },
+          'Use when the caller explicitly requests a human, or after 3 failed clarification attempts. ' +
+          'Always capture caller info (name, phone, issue) BEFORE invoking unless caller explicitly requests immediate transfer.',
+        parameters: {
+          type: 'object',
+          properties: {
+            caller_name: { type: 'string', description: 'Caller full name if captured' },
+            job_type: { type: 'string', description: 'Type of job or service needed' },
+            urgency: {
+              type: 'string',
+              enum: ['emergency', 'routine', 'high_ticket'],
+              description: 'Urgency level detected from conversation',
+            },
+            summary: { type: 'string', description: '1-line summary of caller request for the receiving human' },
+          },
+          required: [],
+        },
       },
     },
   ];
+
+  // capture_lead — always available, NOT gated by onboardingComplete
+  tools.push({
+    type: 'function',
+    function: {
+      name: 'capture_lead',
+      description:
+        'Capture caller information as a lead when they decline booking. ' +
+        'Use after the second explicit decline. Invoke BEFORE end_call.',
+      parameters: {
+        type: 'object',
+        properties: {
+          caller_name: { type: 'string', description: 'Caller full name' },
+          phone: { type: 'string', description: 'Caller phone number if provided' },
+          address: { type: 'string', description: 'Service address if provided' },
+          job_type: { type: 'string', description: 'Type of job or service needed' },
+          notes: { type: 'string', description: 'Any additional context from the conversation' },
+        },
+        required: [],
+      },
+    },
+  });
+
+  // end_call — always available, NOT gated by onboardingComplete
+  tools.push({
+    type: 'function',
+    function: {
+      name: 'end_call',
+      description:
+        'End the call gracefully after all actions are complete. ' +
+        'Always invoke capture_lead BEFORE end_call if no booking was made.',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  });
 
   if (onboardingComplete) {
     tools.push({
@@ -317,6 +364,18 @@ wss.on('connection', (ws, req) => {
   // ── Handle tool call result ──
 
   async function handleToolResult(ws, responseId, toolCall, resultContent, transcript) {
+    // Handle end_call — send farewell and hang up, no Groq continuation needed
+    if (toolCall.name === 'end_call') {
+      ws.send(JSON.stringify({
+        response_type: 'response',
+        response_id: responseId,
+        content: 'Thank you for calling. Have a great day!',
+        content_complete: true,
+        end_call: true,
+      }));
+      return;
+    }
+
     const messages = [{ role: 'system', content: systemPrompt }];
 
     if (transcript && transcript.length > 0) {
