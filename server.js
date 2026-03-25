@@ -258,7 +258,7 @@ wss.on('connection', (ws, req) => {
       // Guard: suppress responses while greeting TTS is still playing (~5s window).
       // Without this, Retell sends response_required from ambient noise/silence during
       // the greeting, Groq responds, and Retell cuts off the greeting mid-sentence.
-      const GREETING_GUARD_MS = 5000;
+      const GREETING_GUARD_MS = 3500;
       if (greetingSentAt && Date.now() - greetingSentAt < GREETING_GUARD_MS) {
         console.log(`[retell-ws] Suppressed ${msg.interaction_type} during greeting TTS guard`);
         return;
@@ -307,7 +307,7 @@ wss.on('connection', (ws, req) => {
         tools: tools.length > 0 ? tools : undefined,
         stream: true,
         temperature: 0.3,
-        max_tokens: 500,
+        max_tokens: 250,
       });
 
       let toolCallAccumulator = {};
@@ -438,7 +438,7 @@ wss.on('connection', (ws, req) => {
         tools: tools.length > 0 ? tools : undefined,
         stream: true,
         temperature: 0.3,
-        max_tokens: 500,
+        max_tokens: 250,
       });
 
       let toolCallAccumulator = {};
