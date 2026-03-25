@@ -14,9 +14,18 @@
  *   PORT          - Optional. Defaults to 8081. Railway/Render set this automatically.
  */
 
+import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
 import { WebSocketServer } from 'ws';
 import OpenAI from 'openai';
 import { buildSystemPrompt } from './agent-prompt.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const greetingMessages = {
+  en: JSON.parse(readFileSync(join(__dirname, 'messages', 'en.json'), 'utf-8')),
+  es: JSON.parse(readFileSync(join(__dirname, 'messages', 'es.json'), 'utf-8')),
+};
 
 const PORT = parseInt(process.env.PORT || '8081', 10);
 
@@ -57,6 +66,11 @@ function getTools(onboardingComplete) {
               description: 'Urgency level detected from conversation',
             },
             summary: { type: 'string', description: '1-line summary of caller request for the receiving human' },
+            reason: {
+              type: 'string',
+              enum: ['caller_requested', 'clarification_limit'],
+              description: 'Why the transfer is happening: caller_requested if caller asked for a human, clarification_limit if 3 clarification attempts were exhausted',
+            },
           },
           required: [],
         },
@@ -146,6 +160,7 @@ wss.on('connection', (ws, req) => {
   let systemPrompt = '';
   let tools = getTools(false);
   let pendingToolCalls = new Map();
+  let greetingSentAt = 0; // timestamp when greeting was sent — used to suppress early response_required
 
   // Send config on connect
   ws.send(
@@ -204,9 +219,10 @@ wss.on('connection', (ws, req) => {
           `onboarding=${onboardingComplete}, tone=${tonePreset}`
       );
 
-      const greeting = onboardingComplete
-        ? `Hello, thank you for calling ${businessName}. This call may be recorded for quality purposes. How can I help you today?`
-        : `Hello, this call may be recorded for quality purposes. How can I help you today?`;
+      const msgs = greetingMessages[locale] || greetingMessages['en'];
+      const greetingKey = onboardingComplete ? 'greeting_onboarding' : 'greeting_default';
+      const greeting = (msgs.agent[greetingKey] || greetingMessages['en'].agent[greetingKey])
+        .replace('{business_name}', businessName);
 
       ws.send(
         JSON.stringify({
@@ -217,6 +233,7 @@ wss.on('connection', (ws, req) => {
           end_call: false,
         })
       );
+      greetingSentAt = Date.now();
       return;
     }
 
@@ -238,6 +255,15 @@ wss.on('connection', (ws, req) => {
 
     // ── Response required or reminder required ──
     if (msg.interaction_type === 'response_required' || msg.interaction_type === 'reminder_required') {
+      // Guard: suppress responses while greeting TTS is still playing (~5s window).
+      // Without this, Retell sends response_required from ambient noise/silence during
+      // the greeting, Groq responds, and Retell cuts off the greeting mid-sentence.
+      const GREETING_GUARD_MS = 5000;
+      if (greetingSentAt && Date.now() - greetingSentAt < GREETING_GUARD_MS) {
+        console.log(`[retell-ws] Suppressed ${msg.interaction_type} during greeting TTS guard`);
+        return;
+      }
+
       await handleResponseRequired(ws, msg);
       return;
     }
@@ -415,6 +441,8 @@ wss.on('connection', (ws, req) => {
         max_tokens: 500,
       });
 
+      let toolCallAccumulator = {};
+
       for await (const chunk of stream) {
         if (ws.readyState !== ws.OPEN) break;
 
@@ -433,6 +461,18 @@ wss.on('connection', (ws, req) => {
           );
         }
 
+        if (delta?.tool_calls) {
+          for (const tc of delta.tool_calls) {
+            const idx = tc.index ?? 0;
+            if (!toolCallAccumulator[idx]) {
+              toolCallAccumulator[idx] = { id: '', name: '', arguments: '' };
+            }
+            if (tc.id) toolCallAccumulator[idx].id = tc.id;
+            if (tc.function?.name) toolCallAccumulator[idx].name = tc.function.name;
+            if (tc.function?.arguments) toolCallAccumulator[idx].arguments += tc.function.arguments;
+          }
+        }
+
         if (finishReason === 'stop') {
           ws.send(
             JSON.stringify({
@@ -444,14 +484,36 @@ wss.on('connection', (ws, req) => {
             })
           );
         }
+
+        if (finishReason === 'tool_calls') {
+          for (const [, tc] of Object.entries(toolCallAccumulator)) {
+            const toolCallId = tc.id || `tc_${Date.now()}_${tc.name}`;
+            pendingToolCalls.set(toolCallId, { name: tc.name, arguments: tc.arguments });
+
+            console.log(`[retell-ws] Chained tool call: ${tc.name}(${tc.arguments})`);
+
+            ws.send(
+              JSON.stringify({
+                response_type: 'tool_call_invocation',
+                tool_call_id: toolCallId,
+                name: tc.name,
+                arguments: tc.arguments,
+              })
+            );
+          }
+        }
       }
     } catch (err) {
       console.error('[retell-ws] Groq API error (tool result):', err.message);
+      // For book_appointment, use the webhook's confirmation text as fallback
+      const fallback = toolCall.name === 'book_appointment' && resultContent
+        ? resultContent
+        : "I've completed that action. Is there anything else I can help you with?";
       ws.send(
         JSON.stringify({
           response_type: 'response',
           response_id: responseId,
-          content: "I've completed that action. Is there anything else I can help you with?",
+          content: fallback,
           content_complete: true,
           end_call: false,
         })

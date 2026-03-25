@@ -28,10 +28,9 @@ PERSONALITY:
 }
 
 function buildGreetingSection(locale, businessName, onboardingComplete, t) {
-  const greeting = onboardingComplete
-    ? `Greet the caller: "Hello, thank you for calling ${businessName}. ${t('agent.recording_disclosure')} ${t('agent.capture_job_type')}"`
-    : `Greet the caller: "${t('agent.recording_disclosure')} ${t('agent.default_greeting')}"`;
-  return greeting;
+  return `GREETING:
+- You have already greeted the caller with the recording notice and asked how you can help.
+- Do NOT repeat the greeting. Begin by listening for the caller's response.`;
 }
 
 function buildLanguageSection(t) {
@@ -123,7 +122,7 @@ Only two situations trigger a transfer to a human:
    - Attempt 3: "Could you describe what you're seeing or what's happening?"
    If after attempt 3 you still cannot determine the job type, invoke transfer_call with whatever caller details you have captured.
 
-When invoking transfer_call, include: caller_name, job_type, urgency, and a 1-line summary of the conversation.
+When invoking transfer_call, include: caller_name, job_type, urgency, a 1-line summary, and reason (use "caller_requested" for explicit human requests, "clarification_limit" for 3-attempt exhaustion).
 
 IMPORTANT: Before ANY transfer attempt, capture the caller's name, phone number, and issue if possible (so the lead is never lost). But for explicit human requests (situation 1), do not delay the transfer to gather info — transfer immediately.
 
