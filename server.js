@@ -29,6 +29,12 @@ const greetingMessages = {
 
 const PORT = parseInt(process.env.PORT || '8081', 10);
 
+// Per-call state that persists across WebSocket reconnections (auto_reconnect: true
+// creates a new WS connection, losing closure-scoped state). Keyed by callId.
+// Entries are cleaned up on call end (no reconnect after close code !== 1006).
+const callStateMap = new Map();
+const CALL_STATE_TTL_MS = 15 * 60 * 1000; // 15 min safety cleanup
+
 let _groq = null;
 function getGroq() {
   if (!_groq) {
@@ -150,17 +156,42 @@ const wss = new WebSocketServer({ port: PORT });
 
 console.log(`[retell-ws] Listening on port ${PORT}`);
 
+// Periodic cleanup of stale call state entries (calls that 1006'd but never reconnected)
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, state] of callStateMap) {
+    if (now - state.createdAt > CALL_STATE_TTL_MS) {
+      callStateMap.delete(id);
+    }
+  }
+}, 60_000);
+
 wss.on('connection', (ws, req) => {
   // Extract call_id from URL path: /llm-websocket/{call_id}
   const urlParts = req.url?.split('/') || [];
   const callId = urlParts[urlParts.length - 1];
-  console.log(`[retell-ws] New connection: call_id=${callId}`);
 
-  // Per-call state
+  // Restore or create per-call state (survives reconnections)
+  const isReconnect = callStateMap.has(callId);
+  if (!isReconnect) {
+    callStateMap.set(callId, { greetingSent: false, createdAt: Date.now() });
+  }
+  const callState = callStateMap.get(callId);
+  console.log(`[retell-ws] ${isReconnect ? 'Reconnection' : 'New connection'}: call_id=${callId}`);
+
+  // Per-connection state (fine to reset on reconnect)
   let systemPrompt = '';
   let tools = getTools(false);
   let pendingToolCalls = new Map();
-  let greetingSentAt = 0; // timestamp when greeting was sent — used to suppress early response_required
+  let greetingSentAt = callState.greetingSent ? Date.now() : 0; // preserve guard timing on reconnect
+
+  // WebSocket-level ping every 15s to prevent Railway's reverse proxy from
+  // killing the connection due to idle timeout (which causes 1006 closures).
+  const keepAliveInterval = setInterval(() => {
+    if (ws.readyState === ws.OPEN) {
+      ws.ping();
+    }
+  }, 15_000);
 
   // Send config on connect
   ws.send(
@@ -216,8 +247,14 @@ wss.on('connection', (ws, req) => {
       tools = getTools(onboardingComplete);
       console.log(
         `[retell-ws] Call details: business=${businessName}, locale=${locale}, ` +
-          `onboarding=${onboardingComplete}, tone=${tonePreset}`
+          `onboarding=${onboardingComplete}, tone=${tonePreset}, reconnect=${callState.greetingSent}`
       );
+
+      // Skip greeting on reconnect — caller already heard it
+      if (callState.greetingSent) {
+        console.log(`[retell-ws] Skipping greeting on reconnect for call_id=${callId}`);
+        return;
+      }
 
       const msgs = greetingMessages[locale] || greetingMessages['en'];
       const greetingKey = onboardingComplete ? 'greeting_onboarding' : 'greeting_default';
@@ -234,6 +271,7 @@ wss.on('connection', (ws, req) => {
         })
       );
       greetingSentAt = Date.now();
+      callState.greetingSent = true;
       return;
     }
 
@@ -258,7 +296,7 @@ wss.on('connection', (ws, req) => {
       // Guard: suppress responses while greeting TTS is still playing (~5s window).
       // Without this, Retell sends response_required from ambient noise/silence during
       // the greeting, Groq responds, and Retell cuts off the greeting mid-sentence.
-      const GREETING_GUARD_MS = 3500;
+      const GREETING_GUARD_MS = 6000;
       if (greetingSentAt && Date.now() - greetingSentAt < GREETING_GUARD_MS) {
         console.log(`[retell-ws] Suppressed ${msg.interaction_type} during greeting TTS guard`);
         return;
@@ -269,8 +307,14 @@ wss.on('connection', (ws, req) => {
     }
   });
 
-  ws.on('close', () => {
-    console.log(`[retell-ws] Connection closed: call_id=${callId}`);
+  ws.on('close', (code) => {
+    clearInterval(keepAliveInterval);
+    console.log(`[retell-ws] Connection closed: call_id=${callId}, code=${code}`);
+    // 1006 = abnormal closure, Retell will reconnect. Keep state for reconnect.
+    // Any other close code = call truly ended, clean up state.
+    if (code !== 1006) {
+      callStateMap.delete(callId);
+    }
   });
 
   ws.on('error', (err) => {
@@ -311,6 +355,7 @@ wss.on('connection', (ws, req) => {
       });
 
       let toolCallAccumulator = {};
+      let hasContent = false;
 
       for await (const chunk of stream) {
         if (ws.readyState !== ws.OPEN) break;
@@ -319,6 +364,7 @@ wss.on('connection', (ws, req) => {
         const finishReason = chunk.choices?.[0]?.finish_reason;
 
         if (delta?.content) {
+          hasContent = true;
           ws.send(
             JSON.stringify({
               response_type: 'response',
@@ -343,11 +389,18 @@ wss.on('connection', (ws, req) => {
         }
 
         if (finishReason === 'stop') {
+          // If Groq returned no content at all (empty response), send a fallback
+          // nudge so the caller doesn't hear silence. This happens when the
+          // transcript is contaminated (e.g., echo of AI's own speech).
+          const content = hasContent ? '' : 'How can I help you today?';
+          if (!hasContent) {
+            console.log(`[retell-ws] Empty Groq response for response_id=${response_id}, sending fallback`);
+          }
           ws.send(
             JSON.stringify({
               response_type: 'response',
               response_id,
-              content: '',
+              content,
               content_complete: true,
               end_call: false,
             })

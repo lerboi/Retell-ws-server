@@ -34,7 +34,12 @@ RESPONSE STYLE:
 function buildGreetingSection(locale, businessName, onboardingComplete, t) {
   return `GREETING:
 - You have already greeted the caller with the recording notice and asked how you can help.
-- Do NOT repeat the greeting. Begin by listening for the caller's response.`;
+- Do NOT repeat the greeting. Begin by listening for the caller's response.
+
+ECHO AWARENESS:
+- Sometimes the caller's microphone picks up YOUR speech and it appears in the transcript as if THEY said it.
+- If the caller's words are identical or nearly identical to something you just said (e.g., they appear to repeat your recording notice or greeting), IGNORE it — treat it as audio echo, not a real response.
+- In this case, respond naturally as if they haven't spoken yet: "How can I help you today?"`;
 }
 
 function buildLanguageSection(t) {
