@@ -144,7 +144,8 @@ function getTools(onboardingComplete) {
           'Book a confirmed appointment slot. Only use after: ' +
           '(1) collecting caller name and service address, ' +
           '(2) reading back the address and receiving verbal confirmation, ' +
-          '(3) the caller has selected a slot from the availability results.',
+          '(3) the caller has selected a slot from the availability results. ' +
+          'Do NOT ask the caller about urgency — infer it from the conversation.',
         parameters: {
           type: 'object',
           properties: {
@@ -155,10 +156,10 @@ function getTools(onboardingComplete) {
             urgency: {
               type: 'string',
               enum: ['emergency', 'routine', 'high_ticket'],
-              description: 'Urgency level',
+              description: 'Inferred from conversation — emergency if active leak/flood/no heat/gas/sparks, otherwise routine',
             },
           },
-          required: ['slot_start', 'slot_end', 'service_address', 'caller_name', 'urgency'],
+          required: ['slot_start', 'slot_end', 'service_address', 'caller_name'],
         },
       },
     });
