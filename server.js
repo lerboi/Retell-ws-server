@@ -97,6 +97,23 @@ function getTools(onboardingComplete) {
     },
   });
 
+  // check_caller_history — always available, NOT gated by onboardingComplete (D-02)
+  tools.push({
+    type: 'function',
+    function: {
+      name: 'check_caller_history',
+      description:
+        'Check if this caller has called before. Returns any existing leads and upcoming appointments. ' +
+        'Invoke this after your greeting, before asking your first question. ' +
+        'Uses the caller phone number from the call — no parameters needed.',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+      },
+    },
+  });
+
   // end_call — always available, NOT gated by onboardingComplete
   tools.push({
     type: 'function',
@@ -250,11 +267,13 @@ wss.on('connection', (ws, req) => {
       const businessName = vars.business_name || 'Voco';
       const onboardingComplete = vars.onboarding_complete === true || vars.onboarding_complete === 'true';
       const tonePreset = vars.tone_preset || 'professional';
+      const intakeQuestions = vars.intake_questions || '';
 
       systemPrompt = buildSystemPrompt(locale, {
         business_name: businessName,
         onboarding_complete: onboardingComplete,
         tone_preset: tonePreset,
+        intake_questions: intakeQuestions,
       });
 
       if (vars.available_slots && vars.available_slots !== 'No available slots') {
@@ -264,7 +283,8 @@ wss.on('connection', (ws, req) => {
       tools = getTools(onboardingComplete);
       console.log(
         `[retell-ws] Call details: business=${businessName}, locale=${locale}, ` +
-          `onboarding=${onboardingComplete}, tone=${tonePreset}, reconnect=${callState.greetingSent}`
+          `onboarding=${onboardingComplete}, tone=${tonePreset}, ` +
+          `intake_q=${intakeQuestions ? intakeQuestions.split('\n').length : 0}, reconnect=${callState.greetingSent}`
       );
 
       // Skip greeting on reconnect — caller already heard it
