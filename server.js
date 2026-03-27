@@ -306,10 +306,12 @@ wss.on('connection', (ws, req) => {
 
     // ── Response required or reminder required ──
     if (msg.interaction_type === 'response_required' || msg.interaction_type === 'reminder_required') {
-      // Guard: suppress responses while greeting TTS is still playing (~5s window).
-      // Without this, Retell sends response_required from ambient noise/silence during
-      // the greeting, Groq responds, and Retell cuts off the greeting mid-sentence.
-      const GREETING_GUARD_MS = 6000;
+      // Guard: suppress responses while greeting TTS is still playing.
+      // The full greeting ("Hello, thank you for calling [business]. This call may be
+      // recorded for quality purposes. How can I help you today?") takes ~7s of TTS.
+      // On speaker, the microphone picks up the AI's own voice as echo, which Retell
+      // transcribes as a "user" turn. A 9s guard covers TTS + echo tail.
+      const GREETING_GUARD_MS = 9000;
       if (greetingSentAt && Date.now() - greetingSentAt < GREETING_GUARD_MS) {
         console.log(`[retell-ws] Suppressed ${msg.interaction_type} during greeting TTS guard`);
         return;
