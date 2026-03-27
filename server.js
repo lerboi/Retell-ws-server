@@ -14,18 +14,9 @@
  *   PORT          - Optional. Defaults to 8081. Railway/Render set this automatically.
  */
 
-import { readFileSync } from 'fs';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
 import { WebSocketServer } from 'ws';
 import OpenAI from 'openai';
 import { buildSystemPrompt } from './agent-prompt.js';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const greetingMessages = {
-  en: JSON.parse(readFileSync(join(__dirname, 'messages', 'en.json'), 'utf-8')),
-  es: JSON.parse(readFileSync(join(__dirname, 'messages', 'es.json'), 'utf-8')),
-};
 
 const PORT = parseInt(process.env.PORT || '8081', 10);
 
@@ -122,12 +113,38 @@ function getTools(onboardingComplete) {
     tools.push({
       type: 'function',
       function: {
+        name: 'check_availability',
+        description:
+          'Check real-time appointment availability for specific dates. ' +
+          'Use before offering slots to the caller, when the caller asks about a specific date or time, ' +
+          'or when previously shown slots may be outdated.',
+        parameters: {
+          type: 'object',
+          properties: {
+            date: {
+              type: 'string',
+              description: 'Target date in YYYY-MM-DD format. If the caller says "next Tuesday", convert to the actual date. If omitted, checks today and the next 2 days.',
+            },
+            urgency: {
+              type: 'string',
+              enum: ['emergency', 'routine', 'high_ticket'],
+              description: 'Urgency level — affects which slots are prioritized',
+            },
+          },
+          required: [],
+        },
+      },
+    });
+
+    tools.push({
+      type: 'function',
+      function: {
         name: 'book_appointment',
         description:
           'Book a confirmed appointment slot. Only invoke AFTER: ' +
           '(1) collecting caller name and service address, ' +
           '(2) reading back the address and receiving verbal confirmation, ' +
-          '(3) the caller has selected a slot.',
+          '(3) the caller has selected a slot from check_availability results.',
         parameters: {
           type: 'object',
           properties: {
@@ -256,22 +273,14 @@ wss.on('connection', (ws, req) => {
         return;
       }
 
-      const msgs = greetingMessages[locale] || greetingMessages['en'];
-      const greetingKey = onboardingComplete ? 'greeting_onboarding' : 'greeting_default';
-      const greeting = (msgs.agent[greetingKey] || greetingMessages['en'].agent[greetingKey])
-        .replace('{business_name}', businessName);
-
-      ws.send(
-        JSON.stringify({
-          response_type: 'response',
-          response_id: 0,
-          content: greeting,
-          content_complete: true,
-          end_call: false,
-        })
-      );
+      // Let Groq generate the greeting from the system prompt (no hardcoded TTS)
       greetingSentAt = Date.now();
       callState.greetingSent = true;
+      await handleResponseRequired(ws, {
+        interaction_type: 'response_required',
+        response_id: 0,
+        transcript: [],
+      });
       return;
     }
 
@@ -443,17 +452,7 @@ wss.on('connection', (ws, req) => {
   // ── Handle tool call result ──
 
   async function handleToolResult(ws, responseId, toolCall, resultContent, transcript) {
-    // Handle end_call — send farewell and hang up, no Groq continuation needed
-    if (toolCall.name === 'end_call') {
-      ws.send(JSON.stringify({
-        response_type: 'response',
-        response_id: responseId,
-        content: 'Thank you for calling. Have a great day!',
-        content_complete: true,
-        end_call: true,
-      }));
-      return;
-    }
+    const isEndCall = toolCall.name === 'end_call';
 
     const messages = [{ role: 'system', content: systemPrompt }];
 
@@ -533,7 +532,7 @@ wss.on('connection', (ws, req) => {
               response_id: responseId,
               content: '',
               content_complete: true,
-              end_call: false,
+              end_call: isEndCall,
             })
           );
         }
@@ -558,17 +557,21 @@ wss.on('connection', (ws, req) => {
       }
     } catch (err) {
       console.error('[retell-ws] Groq API error (tool result):', err.message);
-      // For book_appointment, use the webhook's confirmation text as fallback
-      const fallback = toolCall.name === 'book_appointment' && resultContent
-        ? resultContent
-        : "I've completed that action. Is there anything else I can help you with?";
+      let fallback;
+      if (isEndCall) {
+        fallback = 'Thank you for calling. Goodbye!';
+      } else if (toolCall.name === 'book_appointment' && resultContent) {
+        fallback = resultContent;
+      } else {
+        fallback = "I've completed that action. Is there anything else I can help you with?";
+      }
       ws.send(
         JSON.stringify({
           response_type: 'response',
           response_id: responseId,
           content: fallback,
           content_complete: true,
-          end_call: false,
+          end_call: isEndCall,
         })
       );
     }
