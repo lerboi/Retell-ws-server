@@ -51,7 +51,7 @@ function getTools(onboardingComplete) {
         description:
           "Transfer the current call to the business owner's phone number. " +
           'Use when the caller explicitly requests a human, or after 3 failed clarification attempts. ' +
-          'Always capture caller info (name, phone, issue) BEFORE invoking unless caller explicitly requests immediate transfer.',
+          'Always capture caller info (name, phone, issue) first, unless the caller explicitly requests immediate transfer.',
         parameters: {
           type: 'object',
           properties: {
@@ -82,34 +82,17 @@ function getTools(onboardingComplete) {
       name: 'capture_lead',
       description:
         'Capture caller information as a lead when they decline booking. ' +
-        'Use after the second explicit decline. Invoke BEFORE end_call.',
+        'Use after the second explicit decline. Must be used before ending the call.',
       parameters: {
         type: 'object',
         properties: {
-          caller_name: { type: 'string', description: 'Caller full name' },
+          caller_name: { type: 'string', description: 'Caller full name — always ask for and include this' },
           phone: { type: 'string', description: 'Caller phone number if provided' },
           address: { type: 'string', description: 'Service address if provided' },
           job_type: { type: 'string', description: 'Type of job or service needed' },
           notes: { type: 'string', description: 'Any additional context from the conversation' },
         },
-        required: [],
-      },
-    },
-  });
-
-  // check_caller_history — always available, NOT gated by onboardingComplete (D-02)
-  tools.push({
-    type: 'function',
-    function: {
-      name: 'check_caller_history',
-      description:
-        'Check if this caller has called before. Returns any existing leads and upcoming appointments. ' +
-        'Invoke this after your greeting, before asking your first question. ' +
-        'Uses the caller phone number from the call — no parameters needed.',
-      parameters: {
-        type: 'object',
-        properties: {},
-        required: [],
+        required: ['caller_name'],
       },
     },
   });
@@ -121,7 +104,7 @@ function getTools(onboardingComplete) {
       name: 'end_call',
       description:
         'End the call gracefully after all actions are complete. ' +
-        'Always invoke capture_lead BEFORE end_call if no booking was made.',
+        'Always capture caller information before using this if no booking was made.',
       parameters: { type: 'object', properties: {}, required: [] },
     },
   });
@@ -158,10 +141,10 @@ function getTools(onboardingComplete) {
       function: {
         name: 'book_appointment',
         description:
-          'Book a confirmed appointment slot. Only invoke AFTER: ' +
+          'Book a confirmed appointment slot. Only use after: ' +
           '(1) collecting caller name and service address, ' +
           '(2) reading back the address and receiving verbal confirmation, ' +
-          '(3) the caller has selected a slot from check_availability results.',
+          '(3) the caller has selected a slot from the availability results.',
         parameters: {
           type: 'object',
           properties: {
