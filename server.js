@@ -457,15 +457,17 @@ wss.on('connection', (ws, req) => {
     } catch (err) {
       console.error('[retell-ws] Groq API error:', err.message);
 
-      ws.send(
-        JSON.stringify({
-          response_type: 'response',
-          response_id,
-          content: "I'm sorry, I'm having a brief technical issue. Could you please repeat that?",
-          content_complete: true,
-          end_call: false,
-        })
-      );
+      if (ws.readyState === ws.OPEN) {
+        ws.send(
+          JSON.stringify({
+            response_type: 'response',
+            response_id,
+            content: "I'm sorry, I'm having a brief technical issue. Could you please repeat that?",
+            content_complete: true,
+            end_call: false,
+          })
+        );
+      }
     }
   }
 
@@ -577,23 +579,25 @@ wss.on('connection', (ws, req) => {
       }
     } catch (err) {
       console.error('[retell-ws] Groq API error (tool result):', err.message);
-      let fallback;
-      if (isEndCall) {
-        fallback = 'Thank you for calling. Goodbye!';
-      } else if (toolCall.name === 'book_appointment' && resultContent) {
-        fallback = resultContent;
-      } else {
-        fallback = "I've completed that action. Is there anything else I can help you with?";
+      if (ws.readyState === ws.OPEN) {
+        let fallback;
+        if (isEndCall) {
+          fallback = 'Thank you for calling. Goodbye!';
+        } else if (toolCall.name === 'book_appointment' && resultContent) {
+          fallback = resultContent;
+        } else {
+          fallback = "I've completed that action. Is there anything else I can help you with?";
+        }
+        ws.send(
+          JSON.stringify({
+            response_type: 'response',
+            response_id: responseId,
+            content: fallback,
+            content_complete: true,
+            end_call: isEndCall,
+          })
+        );
       }
-      ws.send(
-        JSON.stringify({
-          response_type: 'response',
-          response_id: responseId,
-          content: fallback,
-          content_complete: true,
-          end_call: isEndCall,
-        })
-      );
     }
   }
 });
