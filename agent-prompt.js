@@ -93,7 +93,7 @@ Goal: book every caller into an appointment.
    Say: "What day or time works best for you?"
    - If they give a specific day/time: call check_availability with that date (convert "next Tuesday" to YYYY-MM-DD). Say "Let me check that for you."
    - If they say "as soon as possible" or describe an emergency: call check_availability for today. Offer the earliest slot.
-   - If they say "whenever" or "no preference": use the INITIAL SLOTS at the end of this prompt if available. If empty or outdated, call check_availability for the next few days.
+   - If they say "whenever" or "no preference": call check_availability for the next few days to get the latest openings.
 
 3. PRESENT SLOTS: Read each slot one at a time. Pause between each.
    Say: "I have an opening on... [day] at [time]." [pause] "I also have... [day] at [time]." Then ask: "Which works better for you?"
@@ -155,8 +155,11 @@ export function buildSystemPrompt(locale, { business_name = 'Voco', onboarding_c
 
   const toneLabel = TONE_LABELS[tone_preset] || TONE_LABELS.professional;
 
+  const today = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD
+
   const sections = [
     buildIdentitySection(business_name, toneLabel),
+    `TODAY'S DATE: ${today}. Use this to convert relative dates ("next Tuesday", "tomorrow") to YYYY-MM-DD format.`,
     buildGreetingSection(locale, business_name, onboarding_complete, t),
     buildLanguageSection(t),
     // buildRepeatCallerSection disabled — call record doesn't exist during live calls yet
